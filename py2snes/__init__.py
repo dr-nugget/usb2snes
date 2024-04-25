@@ -461,7 +461,7 @@ class snes():
             return None
         try:
             request = {
-                'Opcode': 'MakeDir',
+                'Opcode': 'MkDir',
                 'Space': 'SNES',
                 'Flags': None,
                 'Operands': [dirpath]
