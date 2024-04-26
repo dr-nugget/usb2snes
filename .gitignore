@@ -5,3 +5,5 @@ src/test.py
 src/romloader.yaml
 .vscode/
 testing/
+poetry.lock
+*.egg-info/
