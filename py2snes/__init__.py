@@ -3,6 +3,7 @@ __version__ = '1.0.4'
 import websockets
 import json
 from pathlib import Path
+from enum import Enum
 
 import asyncio
 import aiofiles
@@ -13,50 +14,56 @@ import logging
 class usb2snesException(Exception):
     pass
 
-SNES_DISCONNECTED = 0
-SNES_CONNECTING = 1
-SNES_CONNECTED = 2
-SNES_ATTACHED = 3
+class SnesStatus(Enum):
+    DISCONNECTED = 0
+    CONNECTING = 1
+    CONNECTED = 2
+    ATTACHED = 3
 
 ROM_START = 0x000000
 WRAM_START = 0xF50000
 WRAM_SIZE = 0x20000
 SRAM_START = 0xE00000
 
-class snes():
+class Snes():
+    status: SnesStatus
+    recv_queue: asyncio.Queue
+    request_lock: asyncio.Lock
+    is_sd2snes: bool
+
     def __init__(self):
         self.socket = None
         self.recv_queue = asyncio.Queue()
         self.request_lock = asyncio.Lock()
         self.is_sd2snes = False
-        # self.attached = False
+        self.status = SnesStatus.DISCONNECTED
 
     async def connect(self, address='ws://localhost:8080'):
         if self.socket is not None:
             print('Already connected to snes')
             return
 
-        self.state = SNES_CONNECTING
+        self.state = SnesStatus.DISCONNECTED
         recv_task = None
 
         print("Connecting to QUsb2snes at %s ..." % address)
 
         try:
             self.socket = await websockets.connect(address, ping_timeout=None, ping_interval=None)
-            self.state = SNES_CONNECTED
+            self.state = SnesStatus.CONNECTED
         except Exception as e:
             if self.socket is not None:
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
 
         self.recv_task = asyncio.create_task(self.recv_loop())
 
     async def DeviceList(self):
         await self.request_lock.acquire()
 
-        if self.state < SNES_CONNECTED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state < SnesStatus.CONNECTED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -77,12 +84,12 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
         finally:
             self.request_lock.release()
 
     async def Attach(self, device):
-        if self.state != SNES_CONNECTED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.CONNECTED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -91,7 +98,7 @@ class snes():
                 "Operands" : [device]
             }
             await self.socket.send(json.dumps(request))
-            self.state = SNES_ATTACHED
+            self.state = SnesStatus.ATTACHED
 
             if 'SD2SNES'.lower() in device.lower() or (len(device) == 4 and device[:3] == 'COM'):
                 self.is_sd2snes = True
@@ -105,13 +112,13 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.snes_state = SNES_DISCONNECTED
+            self.snes_state = SnesStatus.DISCONNECTED
 
     async def Info(self):
         try:
             await self.request_lock.acquire()
 
-            if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+            if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
                 return None
             try:
                 request = {
@@ -134,12 +141,12 @@ class snes():
                     if not self.socket.closed:
                         await self.socket.close()
                     self.socket = None
-                self.snes_state = SNES_DISCONNECTED
+                self.snes_state = SnesStatus.DISCONNECTED
         finally:
             self.request_lock.release()
 
     async def Name(self, name):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -153,10 +160,10 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
 
     async def Boot(self, rom):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -170,10 +177,10 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
 
     async def Menu(self):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -187,10 +194,10 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
 
     async def Reset(self):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -203,13 +210,13 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
 
     async def GetAddress(self, address, size):
         try:
             await self.request_lock.acquire()
 
-            if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+            if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
                 return None
 
             GetAddress_Request = {
@@ -245,7 +252,7 @@ class snes():
         try:
             await self.request_lock.acquire()
 
-            if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+            if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
                 return False
 
             PutAddress_Request = {
@@ -298,7 +305,7 @@ class snes():
     #     try:
     #         await self.request_lock.acquire()
 
-    #         if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+    #         if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
     #             return None
 
     #         request = {
@@ -334,7 +341,7 @@ class snes():
         try:
             await self.request_lock.acquire()
 
-            if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+            if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
                 return None
 
             size = os.path.getsize(srcfile)
@@ -374,11 +381,11 @@ class snes():
             if socket is not None and not socket.closed:
                 await socket.close()
 
-            self.state = SNES_DISCONNECTED
+            self.state = SnesStatus.DISCONNECTED
             self.recv_queue = asyncio.Queue()
 
     async def List(self,dirpath):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         elif not dirpath.startswith('/') and not dirpath in ['','/']:
             raise usb2snesException("Path \"{path}\" should start with \"/\"".format(
@@ -412,7 +419,7 @@ class snes():
         try:
             await self.request_lock.acquire()
 
-            if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+            if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
                 return None
             try:
                 request = {
@@ -438,12 +445,12 @@ class snes():
                     if not self.socket.closed:
                         await self.socket.close()
                     self.socket = None
-                self.snes_state = SNES_DISCONNECTED
+                self.snes_state = SnesStatus.DISCONNECTED
         finally:
             self.request_lock.release()
 
     async def MakeDir(self,dirpath):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         if dirpath in ['','/']:
             raise usb2snesException('MakeDir: dirpath cannot be blank or \"/\"')
@@ -457,7 +464,7 @@ class snes():
             await self._mkdir(dirpath)
 
     async def _mkdir(self, dirpath):
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -472,12 +479,12 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.snes_state = SNES_DISCONNECTED
+            self.snes_state = SnesStatus.DISCONNECTED
 
     async def Remove(self, dirpath):
         """this is pretty broken"""
 
-        if self.state != SNES_ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
+        if self.state != SnesStatus.ATTACHED or self.socket is None or not self.socket.open or self.socket.closed:
             return None
         try:
             request = {
@@ -492,7 +499,7 @@ class snes():
                 if not self.socket.closed:
                     await self.socket.close()
                 self.socket = None
-            self.snes_state = SNES_DISCONNECTED
+            self.snes_state = SnesStatus.DISCONNECTED
 
 def _listitem(list, index):
     try:
